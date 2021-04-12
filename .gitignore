@@ -1,5 +1,6 @@
 /__pycache__
-/configs.py
-/parser.ipynb
-/parser.log
 /.gitignore
+/configs.py
+/parser.log
+/parser.ipynb
+/parser_new.ipynb

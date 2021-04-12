@@ -6,13 +6,16 @@ import gc
 import pandas as pd
 from pandas.core.common import SettingWithCopyWarning
 import pangres  # ? https://github.com/ThibTrip/pangres/wiki/Upsert
+from rapidfuzz import fuzz, process
 import requests as r
-from sqlalchemy import create_engine, String, Integer, DateTime
+from sqlalchemy import create_engine, String, Integer, DateTime, text
 import sys
 import timeit
 import warnings
 
 from configs import SJ, DB
+
+SIMILARITY_LEVEL_OKPDTR = 75
 
 warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
@@ -108,7 +111,7 @@ def main():
             505, 512, 548
         ]
         vacs_list = []
-        start_time = timeit.default_timer()
+        
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as executor:
             result_futures = list(
                 map(
@@ -127,8 +130,6 @@ def main():
         df = pd.DataFrame.from_records(vacs_list).drop_duplicates(subset=['id'])
         df = df[df.id_client != 0]
         df.dropna(subset=['id'], inplace=True)
-        end_time = timeit.default_timer()
-        logger.info(f'Время получения данные с SuperJob: {end_time - start_time} сек. Всего вакансий: {df.shape[0]}')
     except:
         logger.exception('Проблема с полученим вакансий с API SuperJob')
         sys.exit(2)
@@ -195,6 +196,9 @@ def main():
         vacs_df.date_published = vacs_df.date_published.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S'))
         vacs_df.date_archived = vacs_df.date_archived.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S'))
         vacs_df['download_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        vacs_df['id_mrigo'] = 23
+        vacs_df['id_okpdtr'] = None
+        vacs_df.id_okpdtr = vacs_df.id_okpdtr.astype('Int64')
         vacs_df.set_index(keys='id', inplace=True)
     except:
         logger.exception('Проблема с формированием новых датафреймов')
@@ -249,11 +253,37 @@ def main():
         )
     except:
         logger.exception('Проблема с получением таблиц: vacs.vacancies_sj, data.okpdtr')
+        sys.exit(6)
         
     try:
-        ...
+        okpdtr_dict = dict(zip(okpdtr_db_df.name, okpdtr_db_df.id))
+        vacs_dict = dict(zip(vacs_db_df.profession, vacs_db_df.id))
+        match_list = [
+            (
+                vacs_dict[vac],
+                process.extractOne(vac, list(okpdtr_dict.keys()), scorer=fuzz.token_set_ratio, score_cutoff=SIMILARITY_LEVEL_OKPDTR)
+            ) for vac in list(vacs_dict.keys())
+        ]
     except:
-        ...
+        logger.exception('Проблема с сопоставлением кодов ОКПДТР')
+        sys.exit(7)
         
+    try:
+        match_df = pd.DataFrame(match_list)
+        match_df.set_index(0, inplace=True)
+        match_df = match_df[pd.notna(match_df[1])]
+        match_df[1] = match_df[1].apply(lambda x: okpdtr_dict[x[0]])
+        match_dict = match_df.to_dict('series')
+        with engine.connect() as connection:
+            for key, value in match_dict[1].items():
+                result = connection.execute(text("UPDATE vacs.vacancies_sj SET id_okpdtr = :value WHERE id = :key").bindparams(value=value, key=key))
+    except:
+        logger.exception('Проблема с сопоставлением кодов ОКПДТР')
+        sys.exit(8)
+
+
 if __name__ == "__main__":
+    start_time = timeit.default_timer()
     main()
+    end_time = timeit.default_timer()
+    print(f'Время получения данные с SuperJob: {end_time - start_time} сек')
