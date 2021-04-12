@@ -2,13 +2,19 @@
 from loguru import logger
 import concurrent.futures
 import datetime
+import gc
 import pandas as pd
+from pandas.core.common import SettingWithCopyWarning
+import pangres  # ? https://github.com/ThibTrip/pangres/wiki/Upsert
 import requests as r
+from sqlalchemy import create_engine, String, Integer, DateTime
 import sys
 import timeit
-# ? https://github.com/ThibTrip/pangres/wiki/Upsert
+import warnings
 
 from configs import SJ, DB
+
+warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
 logger.add(
     'parser.log',
@@ -16,7 +22,6 @@ logger.add(
     diagnose=True,
     level='DEBUG',
     encoding='utf-8'
-    
 )
 
 def get_access_token(auth_params: dict) -> str:
@@ -120,6 +125,8 @@ def main():
         for future in concurrent.futures.as_completed(result_futures):
             vacs_list.extend(future.result())
         df = pd.DataFrame.from_records(vacs_list).drop_duplicates(subset=['id'])
+        df = df[df.id_client != 0]
+        df.dropna(subset=['id'], inplace=True)
         end_time = timeit.default_timer()
         logger.info(f'Время получения данные с SuperJob: {end_time - start_time} сек. Всего вакансий: {df.shape[0]}')
     except:
@@ -127,6 +134,28 @@ def main():
         sys.exit(2)
         
     try:
+        orgs_df = df[['client', 'client_logo']]
+        orgs_df['id'] = orgs_df.client.apply(lambda x: x.get('id') if not pd.isnull(x) else None)
+        orgs_df.id = orgs_df.id.astype('Int64')
+        orgs_df['name'] = orgs_df.client.apply(lambda x: x.get('title')if not pd.isnull(x) else None)
+        orgs_df['description'] = orgs_df.client.apply(lambda x: x.get('description') if not pd.isnull(x) else None)
+        orgs_df['vacancy_count'] = orgs_df.client.apply(lambda x: x.get('vacancy_count') if not pd.isnull(x) else None)
+        orgs_df.vacancy_count = orgs_df.vacancy_count.astype('Int64')
+        orgs_df['staff_count'] = orgs_df.client.apply(lambda x: x.get('staff_count') if not pd.isnull(x) else None)
+        orgs_df['client_logo'] = orgs_df.client.apply(lambda x: x.get('client_logo') if not pd.isnull(x) else None)
+        orgs_df['main_address'] = orgs_df.client.apply(lambda x: x.get('address') if not pd.isnull(x) else None)
+        orgs_df['addresses'] = orgs_df.client.apply(lambda x: x.get('addresses') if not pd.isnull(x) else None)
+        orgs_df.addresses = orgs_df.addresses.astype('str')
+        orgs_df['url'] = orgs_df.client.apply(lambda x: x.get('url') if not pd.isnull(x) else None)
+        orgs_df['link'] = orgs_df.client.apply(lambda x: x.get('link') if not pd.isnull(x) else None)
+        orgs_df['registered_date'] = orgs_df.client.apply((lambda x: x.get('registered_date') if not pd.isnull(x) else None))
+        orgs_df.registered_date = orgs_df.registered_date.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S') if not pd.isnull(x) else None)
+        orgs_df['download_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        orgs_df = orgs_df.drop(columns=['client', 'client_logo'])
+        orgs_df.dropna(subset=['id'], inplace=True)
+        orgs_df.drop_duplicates(subset=['id'], keep='last', inplace=True)
+        orgs_df.set_index(keys='id', inplace=True)
+        
         vacs_df = df[[
             'id', 'id_client',
             'profession', 'candidat',
@@ -166,28 +195,65 @@ def main():
         vacs_df.date_published = vacs_df.date_published.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S'))
         vacs_df.date_archived = vacs_df.date_archived.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S'))
         vacs_df['download_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        
-        orgs_df = df[['client', 'client_logo']]
-        orgs_df['id'] = orgs_df.client.apply(lambda x: x.get('id') if not pd.isnull(x) else None)
-        orgs_df.id = orgs_df.id.astype('Int64')
-        orgs_df['name'] = orgs_df.client.apply(lambda x: x.get('title')if not pd.isnull(x) else None)
-        orgs_df['description'] = orgs_df.client.apply(lambda x: x.get('description') if not pd.isnull(x) else None)
-        orgs_df['vacancy_count'] = orgs_df.client.apply(lambda x: x.get('vacancy_count') if not pd.isnull(x) else None)
-        orgs_df.vacancy_count = orgs_df.vacancy_count.astype('Int64')
-        orgs_df['staff_count'] = orgs_df.client.apply(lambda x: x.get('staff_count') if not pd.isnull(x) else None)
-        orgs_df['client_logo'] = orgs_df.client.apply(lambda x: x.get('client_logo') if not pd.isnull(x) else None)
-        orgs_df['main_address'] = orgs_df.client.apply(lambda x: x.get('address') if not pd.isnull(x) else None)
-        orgs_df['addresses'] = orgs_df.client.apply(lambda x: x.get('addresses') if not pd.isnull(x) else None)
-        orgs_df['url'] = orgs_df.client.apply(lambda x: x.get('url') if not pd.isnull(x) else None)
-        orgs_df['link'] = orgs_df.client.apply(lambda x: x.get('link') if not pd.isnull(x) else None)
-        orgs_df['registered_date'] = orgs_df.client.apply((lambda x: x.get('registered_date') if not pd.isnull(x) else None))
-        orgs_df.registered_date = orgs_df.registered_date.apply(lambda x: datetime.datetime.fromtimestamp(x).strftime('%Y-%m-%d %H:%M:%S') if not pd.isnull(x) else None)
-        orgs_df['download_time'] = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-        orgs_df = orgs_df.drop(columns=['client', 'client_logo'])
-        print(orgs_df)
+        vacs_df.set_index(keys='id', inplace=True)
     except:
         logger.exception('Проблема с формированием новых датафреймов')
         sys.exit(2)
-
+        
+    try:
+        engine = create_engine(f"{DB['name']}://{DB['username']}:{DB['password']}@{DB['host']}:{DB['port']}/{DB['db']}", echo=False)
+        engine.connect()
+    except:
+        logger.exception('Не удалось подключиться к БД')
+        sys.exit(3)
+        
+    try:
+        pangres.upsert(
+            engine=engine,
+            df=orgs_df,
+            schema='vacs',
+            table_name='companies_sj',
+            if_row_exists='ignore',
+        )
+    except:
+        logger.exception('Не удалось выгрузить компании')
+        sys.exit(4)
+    
+    try:
+        pangres.upsert(
+            engine=engine,
+            df=vacs_df,
+            schema='vacs',
+            table_name='vacancies_sj',
+            if_row_exists='update',
+        )
+    except:
+        logger.exception('Не удалось выгрузить вакансии')
+        sys.exit(5)
+    
+    try:
+        del [[df, orgs_df, vacs_df]]
+        gc.collect()
+        df, orgs_df, vacs_df = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    except:
+        logger.warning('Очистка датафреймов: df, orgs_df, vacs_df')
+    
+    try:
+        vacs_db_df = pd.read_sql(
+            sql=f"select * from vacs.vacancies_sj where id_okpdtr is null",
+            con=engine
+        )
+        okpdtr_db_df = pd.read_sql(
+            sql=f"select id, name from data.okpdtr where code != '_'",
+            con=engine
+        )
+    except:
+        logger.exception('Проблема с получением таблиц: vacs.vacancies_sj, data.okpdtr')
+        
+    try:
+        ...
+    except:
+        ...
+        
 if __name__ == "__main__":
     main()
