@@ -1,19 +1,18 @@
 # coding: utf-8
+from configs import SJ, DB
 from loguru import logger
+from pandas.core.common import SettingWithCopyWarning
+from rapidfuzz import fuzz, process
+from sqlalchemy import create_engine, String, Integer, DateTime, text
 import concurrent.futures
 import datetime
 import gc
 import pandas as pd
-from pandas.core.common import SettingWithCopyWarning
 import pangres  # ? https://github.com/ThibTrip/pangres/wiki/Upsert
-from rapidfuzz import fuzz, process
 import requests as r
-from sqlalchemy import create_engine, String, Integer, DateTime, text
 import sys
 import timeit
 import warnings
-
-from configs import SJ, DB
 
 SIMILARITY_LEVEL_OKPDTR = 75
 
@@ -91,10 +90,21 @@ def get_vacancies(access_token: str, client_secret: str, catalogues_id: int, pag
 
 def main():
     try:
+        engine = create_engine(f"{DB['name']}://{DB['username']}:{DB['password']}@{DB['host']}:{DB['port']}/{DB['db']}", echo=False)
+        engine.connect()
+    except:
+        s = 'Не удалось подключиться к БД'
+        logger.exception(s)
+        sys.exit(1)
+    
+    try:
         access_token = get_access_token(auth_params=SJ)
     except:
-        logger.exception('Проблема с получение access_token')
-        sys.exit(1)
+        s = 'Проблема с получение access_token'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=2, msg=s))
+        sys.exit(2)
     
     try:
         # ID отраслей в фильтре API SuperJob
@@ -131,8 +141,11 @@ def main():
         df = df[df.id_client != 0]
         df.dropna(subset=['id'], inplace=True)
     except:
-        logger.exception('Проблема с полученим вакансий с API SuperJob')
-        sys.exit(2)
+        s = 'Проблема с полученим вакансий с API SuperJob'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=3, msg=s))
+        sys.exit(3)
         
     try:
         orgs_df = df[['client', 'client_logo']]
@@ -201,15 +214,11 @@ def main():
         vacs_df.id_okpdtr = vacs_df.id_okpdtr.astype('Int64')
         vacs_df.set_index(keys='id', inplace=True)
     except:
-        logger.exception('Проблема с формированием новых датафреймов')
-        sys.exit(2)
-        
-    try:
-        engine = create_engine(f"{DB['name']}://{DB['username']}:{DB['password']}@{DB['host']}:{DB['port']}/{DB['db']}", echo=False)
-        engine.connect()
-    except:
-        logger.exception('Не удалось подключиться к БД')
-        sys.exit(3)
+        s = 'Проблема с формированием новых датафреймов'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=4, msg=s))
+        sys.exit(4)
         
     try:
         pangres.upsert(
@@ -220,8 +229,11 @@ def main():
             if_row_exists='ignore',
         )
     except:
-        logger.exception('Не удалось выгрузить компании')
-        sys.exit(4)
+        s = 'Не удалось выгрузить компании'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=5, msg=s))
+        sys.exit(5)
     
     try:
         pangres.upsert(
@@ -232,8 +244,11 @@ def main():
             if_row_exists='update',
         )
     except:
-        logger.exception('Не удалось выгрузить вакансии')
-        sys.exit(5)
+        s = 'Не удалось выгрузить вакансии'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=6, msg=s))
+        sys.exit(6)
     
     try:
         del [[df, orgs_df, vacs_df]]
@@ -252,8 +267,11 @@ def main():
             con=engine
         )
     except:
-        logger.exception('Проблема с получением таблиц: vacs.vacancies_sj, data.okpdtr')
-        sys.exit(6)
+        s = 'Проблема с получением таблиц: vacs.vacancies_sj, data.okpdtr'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=7, msg=s))
+        sys.exit(7)
         
     try:
         okpdtr_dict = dict(zip(okpdtr_db_df.name, okpdtr_db_df.id))
@@ -265,8 +283,11 @@ def main():
             ) for vac in list(vacs_dict.keys())
         ]
     except:
-        logger.exception('Проблема с сопоставлением кодов ОКПДТР')
-        sys.exit(7)
+        s = 'Проблема с сопоставлением кодов ОКПДТР'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=8, msg=s))
+        sys.exit(8)
         
     try:
         match_df = pd.DataFrame(match_list)
@@ -274,12 +295,19 @@ def main():
         match_df = match_df[pd.notna(match_df[1])]
         match_df[1] = match_df[1].apply(lambda x: okpdtr_dict[x[0]])
         match_dict = match_df.to_dict('series')
-        with engine.connect() as connection:
+        with engine.begin() as connection:
             for key, value in match_dict[1].items():
-                result = connection.execute(text("UPDATE vacs.vacancies_sj SET id_okpdtr = :value WHERE id = :key").bindparams(value=value, key=key))
+                connection.execute(text("UPDATE vacs.vacancies_sj SET id_okpdtr = :value WHERE id = :key").bindparams(value=value, key=key))
     except:
-        logger.exception('Проблема с сопоставлением кодов ОКПДТР')
-        sys.exit(8)
+        s = 'Проблема с сопоставлением кодов ОКПДТР'
+        logger.exception(s)
+        with engine.begin() as connection:
+            connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=9, msg=s))
+        sys.exit(9)
+    
+    s = 'Данные были успешно загружены'    
+    with engine.begin() as connection:
+        connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=0, msg=s))
 
 
 if __name__ == "__main__":
