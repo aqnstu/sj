@@ -257,9 +257,10 @@ def main():
     except:
         logger.warning('Очистка датафреймов: df, orgs_df, vacs_df')
     
+    # TODO: добавить флаг, что сопоставление ОКПДТР было произведено
     try:
         vacs_db_df = pd.read_sql(
-            sql=f"select * from vacs.vacancies_sj where id_okpdtr is null",
+            sql=f"select id, profession from vacs.vacancies_sj where is_matched = false",
             con=engine
         )
         okpdtr_db_df = pd.read_sql(
@@ -274,13 +275,15 @@ def main():
         sys.exit(7)
         
     try:
-        okpdtr_dict = dict(zip(okpdtr_db_df.name, okpdtr_db_df.id))
-        vacs_dict = dict(zip(vacs_db_df.profession, vacs_db_df.id))
+        okpdtr_db_df.set_index('name', inplace=True)
+        okpdtr_dict = okpdtr_db_df.to_dict()['id']
+        vacs_db_df.set_index('id', inplace=True)
+        vacs_dict = vacs_db_df.to_dict()['profession']
         match_list = [
             (
-                vacs_dict[vac],
-                process.extractOne(vac, list(okpdtr_dict.keys()), scorer=fuzz.token_set_ratio, score_cutoff=SIMILARITY_LEVEL_OKPDTR)
-            ) for vac in list(vacs_dict.keys())
+                key,
+                process.extractOne(value, okpdtr_dict.keys(), scorer=fuzz.token_set_ratio, score_cutoff=SIMILARITY_LEVEL_OKPDTR)
+            ) for key, value in vacs_dict.items()
         ]
     except:
         s = 'Проблема с сопоставлением кодов ОКПДТР'
@@ -298,6 +301,10 @@ def main():
         with engine.begin() as connection:
             for key, value in match_dict[1].items():
                 connection.execute(text("UPDATE vacs.vacancies_sj SET id_okpdtr = :value WHERE id = :key").bindparams(value=value, key=key))
+
+        with engine.begin() as connection:
+            for vac_id in vacs_dict.keys():
+                connection.execute(text("UPDATE vacs.vacancies_sj SET is_matched = true WHERE id = :key").bindparams(key=vac_id))
     except:
         s = 'Проблема с сопоставлением кодов ОКПДТР'
         logger.exception(s)
