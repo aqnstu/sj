@@ -8,7 +8,7 @@ import concurrent.futures
 import datetime
 import gc
 import pandas as pd
-import pangres  # ? https://github.com/ThibTrip/pangres/wiki/Upsert
+import pangres
 import requests as r
 import sys
 import timeit
@@ -20,10 +20,12 @@ warnings.simplefilter(action="ignore", category=SettingWithCopyWarning)
 
 logger.add(
     'parser.log',
+    mode='a+',
     backtrace=True,
     diagnose=True,
     level='DEBUG',
-    encoding='utf-8'
+    encoding='utf-8',
+    format="{time} - {level} - {message}"
 )
 
 def get_access_token(auth_params: dict) -> str:
@@ -89,6 +91,8 @@ def get_vacancies(access_token: str, client_secret: str, catalogues_id: int, pag
 
 
 def main():
+    logger.info("Начало работы скрипта...")
+
     try:
         engine = create_engine(f"{DB['name']}://{DB['username']}:{DB['password']}@{DB['host']}:{DB['port']}/{DB['db']}", echo=False)
         engine.connect()
@@ -146,6 +150,8 @@ def main():
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=3, msg=s))
         sys.exit(3)
+
+    logger.info("Данные получены с SJ")
         
     try:
         orgs_df = df[['client', 'client_logo']]
@@ -219,6 +225,8 @@ def main():
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=4, msg=s))
         sys.exit(4)
+
+    logger.info("Отношения организации и вакансии сформированы")
         
     try:
         pangres.upsert(
@@ -249,6 +257,8 @@ def main():
         with engine.begin() as connection:
             connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=6, msg=s))
         sys.exit(6)
+
+    logger.info("Данные выгружены в БД")
     
     try:
         del [[df, orgs_df, vacs_df]]
@@ -257,7 +267,6 @@ def main():
     except:
         logger.warning('Очистка датафреймов: df, orgs_df, vacs_df')
     
-    # TODO: добавить флаг, что сопоставление ОКПДТР было произведено
     try:
         vacs_db_df = pd.read_sql(
             sql=f"select id, profession from vacs.vacancies_sj where is_matched = false",
@@ -316,9 +325,12 @@ def main():
     with engine.begin() as connection:
         connection.execute(text("INSERT INTO vacs.sj_log (exit_point, message) VALUES (:ep, :msg)").bindparams(ep=0, msg=s))
 
+    logger.info("Сопоставление кодов ОКПДТР окончено")
+
 
 if __name__ == "__main__":
     start_time = timeit.default_timer()
     main()
     end_time = timeit.default_timer()
-    print(f'Время получения данные с SuperJob: {end_time - start_time} сек')
+    print(f"Работа скрипта завершена. Время выполнения: {end_time - start_time} сек")
+    logger.info(f"Работа скрипта завершена. Время выполнения: {end_time - start_time} сек")
